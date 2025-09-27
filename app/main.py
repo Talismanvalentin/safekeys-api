@@ -1,5 +1,6 @@
 from fastapi import FastAPI
-from SafeKeys.app.routes import password, token
+from app.routes import password, token
+
 
 
 app = FastAPI(
