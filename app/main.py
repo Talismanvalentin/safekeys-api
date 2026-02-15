@@ -1,7 +1,10 @@
+from secrets import compare_digest
 from time import perf_counter
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from app.config import load_settings
 from app.guards import BruteForceProtector, SlidingWindowRateLimiter
@@ -17,6 +20,9 @@ app = FastAPI(
     title="SafeKeys API",
     description="API for secure password and token operations",
     version="1.1.0",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 app.state.settings = settings
 app.state.hasher = build_hasher()
@@ -29,6 +35,7 @@ app.state.brute_force_protector = BruteForceProtector(
     window_seconds=settings.brute_force_window_seconds,
     lock_seconds=settings.brute_force_lock_seconds,
 )
+docs_basic_auth = HTTPBasic()
 
 
 def _client_ip(request: Request) -> str:
@@ -74,6 +81,31 @@ async def security_middleware(request: Request, call_next):
 
 if not settings.pepper:
     log_event(logger, "security_warning", detail="SAFEKEYS_PEPPER is empty; set it in production.")
+
+
+def require_docs_auth(credentials: HTTPBasicCredentials = Depends(docs_basic_auth)) -> None:
+    valid_username = compare_digest(credentials.username, settings.docs_username)
+    valid_password = compare_digest(credentials.password, settings.docs_password)
+    if not (valid_username and valid_password):
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+
+@app.get("/private/openapi.json", include_in_schema=False, dependencies=[Depends(require_docs_auth)])
+def private_openapi():
+    return app.openapi()
+
+
+@app.get("/private/docs", include_in_schema=False, dependencies=[Depends(require_docs_auth)])
+def private_docs():
+    return get_swagger_ui_html(
+        openapi_url="/private/openapi.json",
+        title="SafeKeys API - Private Docs",
+    )
+
 
 app.include_router(password.router, prefix="/generate", tags=["Password"])
 app.include_router(token.router, prefix="/generate", tags=["Token"])
